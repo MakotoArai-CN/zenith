@@ -215,7 +215,7 @@ fn readCpuTopology(cpu: *CpuInfo) void {
 }
 
 fn readLinuxCpuTopology(cpu: *CpuInfo) void {
-    // Count unique core IDs from /proc/cpuinfo
+    // Count unique (physical_id, core_id) pairs from /proc/cpuinfo
     const file = std.fs.openFileAbsolute("/proc/cpuinfo", .{}) catch {
         readCpuTopologyCpuid(cpu);
         return;
@@ -226,25 +226,32 @@ fn readLinuxCpuTopology(cpu: *CpuInfo) void {
         readCpuTopologyCpuid(cpu);
         return;
     };
-    var seen_cores: [256]u32 = undefined;
-    @memset(&seen_cores, 0xFFFFFFFF);
+    // Pack (physical_id, core_id) into u64 for deduplication
+    var seen_cores: [256]u64 = undefined;
+    @memset(&seen_cores, 0xFFFFFFFFFFFFFFFF);
     var physical: u32 = 0;
+    var current_physical_id: u32 = 0;
 
     var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
     while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "core id")) {
+        if (std.mem.startsWith(u8, line, "physical id")) {
+            const colon = std.mem.indexOf(u8, line, ":") orelse continue;
+            const val = std.mem.trim(u8, line[colon + 1 ..], " \t");
+            current_physical_id = std.fmt.parseInt(u32, val, 10) catch continue;
+        } else if (std.mem.startsWith(u8, line, "core id")) {
             const colon = std.mem.indexOf(u8, line, ":") orelse continue;
             const val = std.mem.trim(u8, line[colon + 1 ..], " \t");
             const core_id = std.fmt.parseInt(u32, val, 10) catch continue;
+            const key = (@as(u64, current_physical_id) << 32) | @as(u64, core_id);
             var found = false;
             for (seen_cores[0..physical]) |sc| {
-                if (sc == core_id) {
+                if (sc == key) {
                     found = true;
                     break;
                 }
             }
             if (!found and physical < seen_cores.len) {
-                seen_cores[physical] = core_id;
+                seen_cores[physical] = key;
                 physical += 1;
             }
         }
@@ -376,6 +383,7 @@ fn readMemory(mem: *MemInfo) void {
         .linux => readLinuxMemory(mem),
         .windows => readWindowsMemory(mem),
         .macos => readMacosMemory(mem),
+        .freebsd => readFreebsdMemory(mem),
         else => {},
     }
 }
@@ -434,6 +442,7 @@ fn readWindowsMemory(mem: *MemInfo) void {
 }
 
 fn readMacosMemory(mem: *MemInfo) void {
+    // Total memory via sysctl HW_MEMSIZE
     const mib = [2]c_int{ 6, 24 }; // CTL_HW, HW_MEMSIZE
     var size: u64 = 0;
     var len: usize = @sizeOf(u64);
@@ -446,6 +455,49 @@ fn readMacosMemory(mem: *MemInfo) void {
         0,
     );
     if (rc == 0) mem.total_bytes = size;
+
+    // Available memory: (free + inactive pages) * page_size
+    const sbn = struct {
+        extern "c" fn sysctlbyname(name: [*:0]const u8, oldp: ?*anyopaque, oldlenp: ?*usize, newp: ?*const anyopaque, newlen: usize) c_int;
+    };
+    var page_size: u32 = 4096;
+    var ps_len: usize = @sizeOf(u32);
+    _ = sbn.sysctlbyname("hw.pagesize", @ptrCast(&page_size), &ps_len, null, 0);
+
+    var free_count: u32 = 0;
+    var fc_len: usize = @sizeOf(u32);
+    _ = sbn.sysctlbyname("vm.page_free_count", @ptrCast(&free_count), &fc_len, null, 0);
+
+    var inactive_count: u32 = 0;
+    var ic_len: usize = @sizeOf(u32);
+    _ = sbn.sysctlbyname("vm.page_inactive_count", @ptrCast(&inactive_count), &ic_len, null, 0);
+
+    mem.available_bytes = (@as(u64, free_count) + @as(u64, inactive_count)) * @as(u64, page_size);
+}
+
+fn readFreebsdMemory(mem: *MemInfo) void {
+    const sbn = struct {
+        extern "c" fn sysctlbyname(name: [*:0]const u8, oldp: ?*anyopaque, oldlenp: ?*usize, newp: ?*const anyopaque, newlen: usize) c_int;
+    };
+    var physmem: u64 = 0;
+    var phys_len: usize = @sizeOf(u64);
+    if (sbn.sysctlbyname("hw.physmem", @ptrCast(&physmem), &phys_len, null, 0) == 0) {
+        mem.total_bytes = physmem;
+    }
+
+    var page_size: u32 = 4096;
+    var ps_len: usize = @sizeOf(u32);
+    _ = sbn.sysctlbyname("hw.pagesize", @ptrCast(&page_size), &ps_len, null, 0);
+
+    var free_count: u32 = 0;
+    var fc_len: usize = @sizeOf(u32);
+    _ = sbn.sysctlbyname("vm.stats.vm.v_free_count", @ptrCast(&free_count), &fc_len, null, 0);
+
+    var inactive_count: u32 = 0;
+    var ic_len: usize = @sizeOf(u32);
+    _ = sbn.sysctlbyname("vm.stats.vm.v_inactive_count", @ptrCast(&inactive_count), &ic_len, null, 0);
+
+    mem.available_bytes = (@as(u64, free_count) + @as(u64, inactive_count)) * @as(u64, page_size);
 }
 
 // ==================== Hostname ====================
@@ -454,7 +506,7 @@ fn readHostname(os: *OsInfo) void {
     switch (builtin.os.tag) {
         .linux => readLinuxHostname(os),
         .windows => readWindowsHostname(os),
-        .macos => readPosixHostname(os),
+        .macos, .freebsd => readPosixHostname(os),
         else => setStr(&os.hostname, &os.hostname_len, "unknown"),
     }
 }
@@ -501,11 +553,13 @@ fn readKernelVersion(os: *OsInfo) void {
         .linux => readLinuxKernelVersion(os),
         .windows => readWindowsKernelVersion(os),
         .macos => readMacosKernelVersion(os),
+        .freebsd => readFreebsdKernelVersion(os),
         else => setStr(&os.kernel_version, &os.kernel_version_len, "unknown"),
     }
 }
 
 fn readLinuxKernelVersion(os: *OsInfo) void {
+    // /proc/version format: "Linux version 5.14.0-570.22.1.el9_6.x86_64 (...)"
     const file = std.fs.openFileAbsolute("/proc/version", .{}) catch {
         setStr(&os.kernel_version, &os.kernel_version_len, "unknown");
         return;
@@ -517,17 +571,17 @@ fn readLinuxKernelVersion(os: *OsInfo) void {
         return;
     };
     const content = buf[0..n];
-    const first_space = std.mem.indexOf(u8, content, " ") orelse {
-        setStr(&os.kernel_version, &os.kernel_version_len, "unknown");
-        return;
-    };
-    const after = content[first_space + 1 ..];
-    const second_space = std.mem.indexOf(u8, after, " ") orelse {
-        setStr(&os.kernel_version, &os.kernel_version_len, "unknown");
-        return;
-    };
-    const ver = std.mem.trim(u8, after[0..second_space], " \t\n");
-    setStr(&os.kernel_version, &os.kernel_version_len, ver);
+    const prefix = "Linux version ";
+    if (std.mem.startsWith(u8, content, prefix)) {
+        const rest = content[prefix.len..];
+        const end = std.mem.indexOf(u8, rest, " ") orelse rest.len;
+        const ver = std.mem.trim(u8, rest[0..end], " \t\n\r");
+        if (ver.len > 0) {
+            setStr(&os.kernel_version, &os.kernel_version_len, ver);
+            return;
+        }
+    }
+    setStr(&os.kernel_version, &os.kernel_version_len, "unknown");
 }
 
 fn readWindowsKernelVersion(os: *OsInfo) void {
@@ -557,12 +611,26 @@ fn readMacosKernelVersion(os: *OsInfo) void {
     }
 }
 
+fn readFreebsdKernelVersion(os: *OsInfo) void {
+    const sbn = struct {
+        extern "c" fn sysctlbyname(name: [*:0]const u8, oldp: ?*anyopaque, oldlenp: ?*usize, newp: ?*const anyopaque, newlen: usize) c_int;
+    };
+    var ver_len: usize = os.kernel_version.len;
+    if (sbn.sysctlbyname("kern.osrelease", @ptrCast(&os.kernel_version), &ver_len, null, 0) == 0 and ver_len > 0) {
+        const ver = std.mem.trim(u8, os.kernel_version[0..ver_len], "\x00 \t\n\r");
+        os.kernel_version_len = ver.len;
+    } else {
+        setStr(&os.kernel_version, &os.kernel_version_len, "unknown");
+    }
+}
+
 // ==================== Full OS Name ====================
 
 fn readFullOsName(os: *OsInfo) void {
     switch (builtin.os.tag) {
-        .linux => readLinuxOsName(os),
+        .linux, .freebsd => readLinuxOsName(os),
         .windows => readWindowsOsName(os),
+        .macos => readMacosOsName(os),
         else => setStr(&os.full_name, &os.full_name_len, @tagName(builtin.os.tag)),
     }
 }
@@ -637,12 +705,34 @@ fn readWindowsOsName(os: *OsInfo) void {
     }
 }
 
+fn readMacosOsName(os: *OsInfo) void {
+    const sbn = struct {
+        extern "c" fn sysctlbyname(name: [*:0]const u8, oldp: ?*anyopaque, oldlenp: ?*usize, newp: ?*const anyopaque, newlen: usize) c_int;
+    };
+    // kern.osproductversion returns e.g. "14.5"
+    var ver_buf: [32]u8 = undefined;
+    var ver_len: usize = ver_buf.len;
+    if (sbn.sysctlbyname("kern.osproductversion", @ptrCast(&ver_buf), &ver_len, null, 0) == 0 and ver_len > 0) {
+        const ver = std.mem.trim(u8, ver_buf[0..ver_len], "\x00 \t\n\r");
+        if (ver.len > 0) {
+            const s = std.fmt.bufPrint(&os.full_name, "macOS {s}", .{ver}) catch {
+                setStr(&os.full_name, &os.full_name_len, "macOS");
+                return;
+            };
+            os.full_name_len = s.len;
+            return;
+        }
+    }
+    setStr(&os.full_name, &os.full_name_len, "macOS");
+}
+
 // ==================== Uptime ====================
 
 fn readUptime(os: *OsInfo) void {
     switch (builtin.os.tag) {
         .linux => readLinuxUptime(os),
         .windows => readWindowsUptime(os),
+        .macos, .freebsd => readBsdUptime(os),
         else => {},
     }
 }
@@ -667,29 +757,99 @@ fn readWindowsUptime(os: *OsInfo) void {
     os.uptime_seconds = k32.GetTickCount64() / 1000;
 }
 
+fn readBsdUptime(os: *OsInfo) void {
+    // sysctl kern.boottime returns a timeval {tv_sec, tv_usec}
+    const sbn = struct {
+        extern "c" fn sysctlbyname(name: [*:0]const u8, oldp: ?*anyopaque, oldlenp: ?*usize, newp: ?*const anyopaque, newlen: usize) c_int;
+    };
+    const Timeval = extern struct {
+        tv_sec: isize,
+        tv_usec: isize,
+    };
+    var boottime: Timeval = undefined;
+    var bt_len: usize = @sizeOf(Timeval);
+    if (sbn.sysctlbyname("kern.boottime", @ptrCast(&boottime), &bt_len, null, 0) == 0 and boottime.tv_sec > 0) {
+        const time_fn = struct {
+            extern "c" fn time(tloc: ?*isize) isize;
+        };
+        const now = time_fn.time(null);
+        if (now > boottime.tv_sec) {
+            os.uptime_seconds = @intCast(now - boottime.tv_sec);
+        }
+    }
+}
+
 // ==================== Timezone ====================
 
 fn readTimezone(os: *OsInfo) void {
     switch (builtin.os.tag) {
         .linux => readLinuxTimezone(os),
         .windows => readWindowsTimezone(os),
+        .macos, .freebsd => readBsdTimezone(os),
         else => setStr(&os.timezone, &os.timezone_len, "unknown"),
     }
 }
 
 fn readLinuxTimezone(os: *OsInfo) void {
-    const file = std.fs.openFileAbsolute("/etc/timezone", .{}) catch {
-        setStr(&os.timezone, &os.timezone_len, "unknown");
-        return;
-    };
-    defer file.close();
-    var buf: [64]u8 = undefined;
-    const n = file.read(&buf) catch {
-        setStr(&os.timezone, &os.timezone_len, "unknown");
-        return;
-    };
-    const tz = std.mem.trim(u8, buf[0..n], " \t\n\r");
-    setStr(&os.timezone, &os.timezone_len, tz);
+    // Method 1: /etc/timezone (Debian/Ubuntu)
+    blk: {
+        const file = std.fs.openFileAbsolute("/etc/timezone", .{}) catch break :blk;
+        defer file.close();
+        var buf: [64]u8 = undefined;
+        const n = file.read(&buf) catch break :blk;
+        const tz = std.mem.trim(u8, buf[0..n], " \t\n\r");
+        if (tz.len > 0) {
+            setStr(&os.timezone, &os.timezone_len, tz);
+            return;
+        }
+    }
+
+    // Method 2: /etc/localtime symlink target (RHEL/Rocky/CentOS/Fedora/Arch)
+    // Symlink points to e.g. /usr/share/zoneinfo/Asia/Shanghai
+    blk2: {
+        var link_buf: [256]u8 = undefined;
+        const rc = std.os.linux.syscall4(
+            .readlinkat,
+            @as(usize, @bitCast(@as(isize, -100))), // AT_FDCWD
+            @intFromPtr(@as([*:0]const u8, "/etc/localtime")),
+            @intFromPtr(&link_buf),
+            link_buf.len,
+        );
+        const signed_rc: isize = @bitCast(rc);
+        if (signed_rc <= 0) break :blk2;
+        const link = link_buf[0..@as(usize, @intCast(signed_rc))];
+        const prefix = "/usr/share/zoneinfo/";
+        if (std.mem.indexOf(u8, link, prefix)) |idx| {
+            const tz = link[idx + prefix.len ..];
+            if (tz.len > 0) {
+                setStr(&os.timezone, &os.timezone_len, tz);
+                return;
+            }
+        }
+    }
+
+    // Method 3: /etc/TZ (Alpine Linux)
+    blk3: {
+        const file = std.fs.openFileAbsolute("/etc/TZ", .{}) catch break :blk3;
+        defer file.close();
+        var tz_buf: [64]u8 = undefined;
+        const tz_n = file.read(&tz_buf) catch break :blk3;
+        const tz = std.mem.trim(u8, tz_buf[0..tz_n], " \t\n\r");
+        if (tz.len > 0) {
+            setStr(&os.timezone, &os.timezone_len, tz);
+            return;
+        }
+    }
+
+    // Method 4: TZ environment variable
+    if (std.posix.getenv("TZ")) |tz| {
+        if (tz.len > 0) {
+            setStr(&os.timezone, &os.timezone_len, tz);
+            return;
+        }
+    }
+
+    setStr(&os.timezone, &os.timezone_len, "unknown");
 }
 
 fn readWindowsTimezone(os: *OsInfo) void {
@@ -721,6 +881,46 @@ fn readWindowsTimezone(os: *OsInfo) void {
         return;
     };
     os.timezone_len = s.len;
+}
+
+fn readBsdTimezone(os: *OsInfo) void {
+    // readlink /etc/localtime -> /var/db/timezone/zoneinfo/... or /usr/share/zoneinfo/...
+    var link_buf: [256]u8 = undefined;
+    const link = std.fs.cwd().readLink("/etc/localtime", &link_buf) catch {
+        // Fallback: TZ environment variable
+        if (std.posix.getenv("TZ")) |tz| {
+            if (tz.len > 0) {
+                setStr(&os.timezone, &os.timezone_len, tz);
+                return;
+            }
+        }
+        setStr(&os.timezone, &os.timezone_len, "unknown");
+        return;
+    };
+
+    // Extract timezone name from path prefixes
+    const prefixes = [_][]const u8{
+        "/var/db/timezone/zoneinfo/",
+        "/usr/share/zoneinfo/",
+    };
+    for (prefixes) |prefix| {
+        if (std.mem.indexOf(u8, link, prefix)) |idx| {
+            const tz = link[idx + prefix.len ..];
+            if (tz.len > 0) {
+                setStr(&os.timezone, &os.timezone_len, tz);
+                return;
+            }
+        }
+    }
+
+    // Fallback: TZ environment variable
+    if (std.posix.getenv("TZ")) |tz| {
+        if (tz.len > 0) {
+            setStr(&os.timezone, &os.timezone_len, tz);
+            return;
+        }
+    }
+    setStr(&os.timezone, &os.timezone_len, "unknown");
 }
 
 // ==================== Disk Space ====================
@@ -891,6 +1091,7 @@ fn readVirtualization(virt: *VirtInfo) void {
 fn readLoad(load: *LoadInfo) void {
     switch (builtin.os.tag) {
         .linux => readLinuxLoad(load),
+        .macos, .freebsd => readBsdLoad(load),
         else => {},
     }
 }
@@ -904,6 +1105,17 @@ fn readLinuxLoad(load: *LoadInfo) void {
     if (fields.next()) |f1| load.load_1 = std.fmt.parseFloat(f64, f1) catch 0;
     if (fields.next()) |f2| load.load_5 = std.fmt.parseFloat(f64, f2) catch 0;
     if (fields.next()) |f3| load.load_15 = std.fmt.parseFloat(f64, f3) catch 0;
+}
+
+fn readBsdLoad(load: *LoadInfo) void {
+    const getloadavg_fn = struct {
+        extern "c" fn getloadavg(loadavg: [*]f64, nelem: c_int) c_int;
+    };
+    var avgs: [3]f64 = undefined;
+    const rc = getloadavg_fn.getloadavg(&avgs, 3);
+    if (rc >= 1) load.load_1 = avgs[0];
+    if (rc >= 2) load.load_5 = avgs[1];
+    if (rc >= 3) load.load_15 = avgs[2];
 }
 
 // ==================== CPUID Helpers ====================

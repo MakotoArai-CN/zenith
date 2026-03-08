@@ -25,20 +25,23 @@ pub fn run(allocator: std.mem.Allocator, config: cli.Config, progress: *output.P
     const run_seq = config.disk_method == .sequential or config.disk_method == .all;
     const run_rand = config.disk_method == .random or config.disk_method == .all;
 
+    // Resolve disk path: on Windows /tmp doesn't exist, fall back to a valid temp directory
+    const disk_path = resolveDiskPath(config.disk_path);
+
     if (run_seq) {
         progress.next(output.tr(config.language, "磁盘顺序写入", "Disk Seq Write", "ディスク書込"));
-        result.seq_write_speed = try benchSeqWrite(allocator, config.disk_path, size_bytes, config.duration_secs);
+        result.seq_write_speed = try benchSeqWrite(allocator, disk_path, size_bytes, config.duration_secs);
 
         progress.next(output.tr(config.language, "磁盘顺序读取", "Disk Seq Read", "ディスク読取"));
-        result.seq_read_speed = try benchSeqRead(allocator, config.disk_path, size_bytes, config.duration_secs);
+        result.seq_read_speed = try benchSeqRead(allocator, disk_path, size_bytes, config.duration_secs);
     }
 
     if (run_rand) {
         progress.next(output.tr(config.language, "磁盘随机写入", "Disk Rand Write", "ディスクランダム書込"));
-        result.rand_write_iops = try benchRandWrite(allocator, config.disk_path, config.duration_secs);
+        result.rand_write_iops = try benchRandWrite(allocator, disk_path, config.duration_secs);
 
         progress.next(output.tr(config.language, "磁盘随机读取", "Disk Rand Read", "ディスクランダム読取"));
-        result.rand_read_iops = try benchRandRead(allocator, config.disk_path, size_bytes, config.duration_secs);
+        result.rand_read_iops = try benchRandRead(allocator, disk_path, size_bytes, config.duration_secs);
     }
 
     const seq_score = (result.seq_write_speed + result.seq_read_speed) / (1024.0 * 1024.0) * DISK_SCORE_FACTOR;
@@ -48,10 +51,46 @@ pub fn run(allocator: std.mem.Allocator, config: cli.Config, progress: *output.P
     return result;
 }
 
+fn resolveDiskPath(path: []const u8) []const u8 {
+    // Verify the target directory exists and is accessible
+    var dir = std.fs.cwd().openDir(path, .{}) catch {
+        // Directory doesn't exist (e.g. /tmp on Windows), try platform temp dir
+        if (comptime builtin.os.tag == .windows) {
+            return resolveWindowsTemp();
+        }
+        return ".";
+    };
+    dir.close();
+    return path;
+}
+
+fn resolveWindowsTemp() []const u8 {
+    const State = struct {
+        var buf: [512]u8 = undefined;
+        var resolved: ?[]const u8 = null;
+    };
+    if (State.resolved) |p| return p;
+    const k32 = struct {
+        extern "kernel32" fn GetTempPathA(nBufferLength: u32, lpBuffer: [*]u8) callconv(.winapi) u32;
+    };
+    const len = k32.GetTempPathA(@intCast(State.buf.len), &State.buf);
+    if (len > 0 and len < State.buf.len) {
+        var end: usize = @intCast(len);
+        // Remove trailing separators
+        while (end > 0 and (State.buf[end - 1] == '\\' or State.buf[end - 1] == '/')) {
+            end -= 1;
+        }
+        State.resolved = State.buf[0..end];
+        return State.resolved.?;
+    }
+    State.resolved = ".";
+    return ".";
+}
+
 fn getTestFilePath(buf: []u8, base_path: []const u8) []const u8 {
     const suffix = "/zenith_bench.tmp";
     const total = base_path.len + suffix.len;
-    if (total > buf.len) return "/tmp/zenith_bench.tmp";
+    if (total > buf.len) return "zenith_bench.tmp";
     @memcpy(buf[0..base_path.len], base_path);
     @memcpy(buf[base_path.len..total], suffix);
     return buf[0..total];
