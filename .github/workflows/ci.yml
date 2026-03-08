@@ -122,8 +122,8 @@ jobs:
                 *windows*i386*)     badge "Windows i386"        "Windows" "i386"         "0078D6" windows white "$n" "Windows x86 32-bit" ;;
                 *macos*x86_64*)     badge "macOS Intel"         "macOS"   "Intel"        "000000" apple   white "$n" "macOS Intel x86_64" ;;
                 *macos*aarch64*)    badge "macOS Apple Silicon" "macOS"   "Apple%20Silicon" "000000" apple white "$n" "macOS Apple Silicon" ;;
-                *freebsd*x86_64*)   badge "FreeBSD x86_64"      "FreeBSD" "x86__64"      "AB2B28" freebsd white "$n" "FreeBSD x86_64" ;;
-                *freebsd*aarch64*)  badge "FreeBSD aarch64"     "FreeBSD" "aarch64"      "AB2B28" freebsd white "$n" "FreeBSD ARM64" ;;
+                *freebsd*x86_64*)   badge "FreeBSD x86_64"      "FreeBSD" "x86__64"      "AB2B28" freebsd red "$n" "FreeBSD x86_64" ;;
+                *freebsd*aarch64*)  badge "FreeBSD aarch64"     "FreeBSD" "aarch64"      "AB2B28" freebsd red "$n" "FreeBSD ARM64" ;;
                 *)
                   # 安全 fallback：文件名中 - 转义为 --
                   safe=$(echo "$n" | sed 's/-/--/g')
