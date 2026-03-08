@@ -210,6 +210,7 @@ fn readCpuModelCpuid(cpu: *CpuInfo) void {
 fn readCpuTopology(cpu: *CpuInfo) void {
     switch (builtin.os.tag) {
         .linux => readLinuxCpuTopology(cpu),
+        .windows => readWindowsCpuTopology(cpu),
         else => readCpuTopologyCpuid(cpu),
     }
 }
@@ -259,6 +260,57 @@ fn readLinuxCpuTopology(cpu: *CpuInfo) void {
     cpu.physical_cores = if (physical > 0) physical else cpu.logical_threads;
 }
 
+fn readWindowsCpuTopology(cpu: *CpuInfo) void {
+    const windows = std.os.windows;
+    const CACHE_DESCRIPTOR = extern struct {
+        Level: u8,
+        Associativity: u8,
+        LineSize: u16,
+        Size: u32,
+        Type: u32,
+    };
+    const SLPI = extern struct {
+        ProcessorMask: usize,
+        Relationship: u32,
+        data: extern union {
+            ProcessorCore: extern struct { Flags: u8 },
+            NumaNode: extern struct { NodeNumber: u32 },
+            Cache: CACHE_DESCRIPTOR,
+            Reserved: [2]u64,
+        },
+    };
+    const k32 = struct {
+        extern "kernel32" fn GetLogicalProcessorInformation(
+            Buffer: ?[*]SLPI,
+            ReturnedLength: *windows.DWORD,
+        ) callconv(.winapi) windows.BOOL;
+    };
+
+    var buf: [@sizeOf(SLPI) * 128]u8 align(@alignOf(SLPI)) = undefined;
+    var buf_len: windows.DWORD = @intCast(buf.len);
+    if (k32.GetLogicalProcessorInformation(@ptrCast(&buf), &buf_len) == 0) {
+        readCpuTopologyCpuid(cpu);
+        return;
+    }
+
+    const entry_size = @sizeOf(SLPI);
+    const count = buf_len / @as(u32, @intCast(entry_size));
+    const entries: [*]const SLPI = @ptrCast(@alignCast(&buf));
+
+    var cores: u32 = 0;
+    for (0..count) |i| {
+        if (entries[i].Relationship == 0) { // RelationProcessorCore
+            cores += 1;
+        }
+    }
+
+    if (cores > 0) {
+        cpu.physical_cores = cores;
+    } else {
+        readCpuTopologyCpuid(cpu);
+    }
+}
+
 fn readCpuTopologyCpuid(cpu: *CpuInfo) void {
     if (builtin.cpu.arch != .x86_64 and builtin.cpu.arch != .x86) {
         cpu.physical_cores = cpu.logical_threads;
@@ -280,6 +332,10 @@ fn readCpuCache(cpu: *CpuInfo) void {
     switch (builtin.os.tag) {
         .linux => {
             readLinuxCpuCache(cpu);
+            if (cpu.l1_cache_kb == 0 and cpu.l2_cache_kb == 0) readCpuCacheCpuid(cpu);
+        },
+        .windows => {
+            readWindowsCpuCache(cpu);
             if (cpu.l1_cache_kb == 0 and cpu.l2_cache_kb == 0) readCpuCacheCpuid(cpu);
         },
         else => readCpuCacheCpuid(cpu),
@@ -338,6 +394,75 @@ fn readCacheSizeKb(path: []const u8) ?u32 {
         return mb * 1024;
     }
     return std.fmt.parseInt(u32, s, 10) catch null;
+}
+
+fn readWindowsCpuCache(cpu: *CpuInfo) void {
+    const windows = std.os.windows;
+    const CACHE_DESCRIPTOR = extern struct {
+        Level: u8,
+        Associativity: u8,
+        LineSize: u16,
+        Size: u32,
+        Type: u32,
+    };
+    const SLPI = extern struct {
+        ProcessorMask: usize,
+        Relationship: u32,
+        data: extern union {
+            ProcessorCore: extern struct { Flags: u8 },
+            NumaNode: extern struct { NodeNumber: u32 },
+            Cache: CACHE_DESCRIPTOR,
+            Reserved: [2]u64,
+        },
+    };
+    const k32 = struct {
+        extern "kernel32" fn GetLogicalProcessorInformation(
+            Buffer: ?[*]SLPI,
+            ReturnedLength: *windows.DWORD,
+        ) callconv(.winapi) windows.BOOL;
+    };
+
+    var buf: [@sizeOf(SLPI) * 128]u8 align(@alignOf(SLPI)) = undefined;
+    var buf_len: windows.DWORD = @intCast(buf.len);
+    if (k32.GetLogicalProcessorInformation(@ptrCast(&buf), &buf_len) == 0) return;
+
+    const entry_size = @sizeOf(SLPI);
+    const count = buf_len / @as(u32, @intCast(entry_size));
+    const entries: [*]const SLPI = @ptrCast(@alignCast(&buf));
+
+    var seen_l1d = false;
+    var seen_l1i = false;
+    var seen_l2 = false;
+    var seen_l3 = false;
+
+    for (0..count) |i| {
+        if (entries[i].Relationship != 2) continue; // RelationCache
+        const cache = entries[i].data.Cache;
+        switch (cache.Level) {
+            1 => {
+                // Type: 1=Instruction, 2=Data, 0=Unified
+                if (cache.Type == 2 and !seen_l1d) { // Data
+                    cpu.l1_cache_kb += cache.Size / 1024;
+                    seen_l1d = true;
+                } else if (cache.Type == 1 and !seen_l1i) { // Instruction
+                    cpu.l1_cache_kb += cache.Size / 1024;
+                    seen_l1i = true;
+                } else if (cache.Type == 0 and !seen_l1d) { // Unified
+                    cpu.l1_cache_kb += cache.Size / 1024;
+                    seen_l1d = true;
+                }
+            },
+            2 => if (!seen_l2) {
+                cpu.l2_cache_kb = cache.Size / 1024;
+                seen_l2 = true;
+            },
+            3 => if (!seen_l3) {
+                cpu.l3_cache_kb = cache.Size / 1024;
+                seen_l3 = true;
+            },
+            else => {},
+        }
+    }
 }
 
 fn readCpuCacheCpuid(cpu: *CpuInfo) void {
