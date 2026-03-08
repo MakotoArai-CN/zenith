@@ -1,0 +1,36 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 定义 Z 字母的渐变色 -->
+    <linearGradient id="zGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFB347;stop-opacity:1" /> <!-- 顶部橙色 -->
+      <stop offset="100%" style="stop-color:#FF4081;stop-opacity:1" /> <!-- 底部粉色 -->
+    </linearGradient>
+    
+    <!-- 定义字体样式 -->
+    <style>
+      .z-text {
+        font-family: 'Arial Black', 'Roboto', sans-serif;
+        font-weight: 900;
+        font-size: 220px;
+        fill: url(#zGradient);
+      }
+    </style>
+  </defs>
+
+  <!-- 1. 外部蓝色几何框架 -->
+  <!-- 通过旋转三个正方形来模拟复杂的十二边形网格结构 -->
+  <g fill="none" stroke="#29B6F2" stroke-width="14" stroke-linejoin="miter">
+    <!-- 正方形 1 (0度) -->
+    <rect x="106" y="106" width="300" height="300" transform="rotate(45 256 256)" />
+    <!-- 正方形 2 (30度) -->
+    <rect x="106" y="106" width="300" height="300" transform="rotate(75 256 256)" />
+    <!-- 正方形 3 (60度) -->
+    <rect x="106" y="106" width="300" height="300" transform="rotate(105 256 256)" />
+  </g>
+
+  <!-- 3. 中心的字母 Z -->
+  <!-- 使用 text 标签，并通过 transform 微调位置使其居中 -->
+  <text x="50%" y="53%" text-anchor="middle" dominant-baseline="middle" class="z-text">
+    Z
+  </text>
+</svg>
