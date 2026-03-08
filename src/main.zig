@@ -10,7 +10,7 @@ const bench_cpu = @import("bench/cpu.zig");
 const bench_mem = @import("bench/memory.zig");
 const bench_disk = @import("bench/disk.zig");
 
-pub const version = "1.0.0";
+pub const version = "1.0.1";
 
 pub fn main() !void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
