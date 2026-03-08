@@ -7,12 +7,57 @@ on:
     branches: [main, master]
   release:
     types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
+  # ==================== 获取版本号 ====================
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      tag_exists: ${{ steps.check_tag.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from build.zig.zon
+        id: get_version
+        run: |
+          VERSION=$(grep -oP '\.version\s*=\s*"\K[^"]+' build.zig.zon)
+          if [ -z "$VERSION" ]; then
+            echo "Error: Could not extract version from build.zig.zon"
+            exit 1
+          fi
+          echo "version=v${VERSION}" >> $GITHUB_OUTPUT
+          echo "Detected version: v${VERSION}"
+
+      - name: Check if tag exists
+        id: check_tag
+        run: |
+          if git rev-parse "${{ steps.get_version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag ${{ steps.get_version.outputs.version }} already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Tag ${{ steps.get_version.outputs.version }} does not exist"
+          fi
+
+  # ==================== 测试 ====================
   test:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            use_make: true
+          - os: windows-latest
+            use_make: false
+          - os: macos-latest
+            use_make: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -22,30 +67,34 @@ jobs:
         with:
           version: "0.15.1"
 
-      - name: Run tests (Unix)
-        if: runner.os != 'Windows'
+      - name: Run tests (Make)
+        if: matrix.use_make
         run: make test
 
-      - name: Run tests (Windows)
-        if: runner.os == 'Windows'
+      - name: Run tests (Zig)
+        if: "!matrix.use_make"
         run: zig build test
 
-      - name: Build native release (Unix)
-        if: runner.os != 'Windows'
+      - name: Build native release (Make)
+        if: matrix.use_make
         run: make release
 
-      - name: Build native release (Windows)
-        if: runner.os == 'Windows'
+      - name: Build native release (Zig)
+        if: "!matrix.use_make"
         run: zig build -Doptimize=ReleaseSmall
 
+  # ==================== 交叉编译 & 发布 ====================
   build-release:
-    if: github.event_name == 'release'
-    needs: test
+    needs: [get-version, test]
+    if: |
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'push' && needs.get-version.outputs.tag_exists == 'false')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -57,9 +106,17 @@ jobs:
 
       - name: Verify build artifacts
         run: |
-          ls -la zig-out/bin/
-          echo "Built files:"
-          find zig-out/bin -type f -name "zenith-*" | wc -l
+          echo "=== Build artifacts ==="
+          ls -lah zig-out/bin/
+          echo ""
+          echo "Total zenith binaries:"
+          find zig-out/bin -type f -name "zenith-*" | sort
+          COUNT=$(find zig-out/bin -type f -name "zenith-*" | wc -l)
+          echo "Count: $COUNT"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "Error: No binaries found!"
+            exit 1
+          fi
 
       - name: Create release archives
         run: |
@@ -70,19 +127,84 @@ jobs:
               echo "Processing: $file"
               if echo "$file" | grep -q "windows"; then
                 zip "../../release/${file}.zip" "$file"
-                echo "Created ZIP: ${file}.zip"
               else
                 tar -czf "../../release/${file}.tar.gz" "$file"
-                echo "Created TAR.GZ: ${file}.tar.gz"
               fi
             fi
           done
-          echo "Release archives created:"
-          ls -la ../../release/
+          echo ""
+          echo "=== Release archives ==="
+          ls -lah ../../release/
 
-      - name: Upload release assets
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --oneline --pretty=format:"- %s (%h)" | head -50)
+          else
+            COMMITS=$(git log ${PREV_TAG}..HEAD --oneline --pretty=format:"- %s (%h)")
+          fi
+
+          VERSION="${{ needs.get-version.outputs.version }}"
+          REPO="${{ github.repository }}"
+          BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+
+          {
+            echo "CHANGELOG<<EOF"
+            echo "## 更新日志"
+            echo ""
+            echo "$COMMITS"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 📦 下载"
+            echo ""
+            echo "| 平台 | 架构 | 下载 |"
+            echo "|:-----|:-----|:-----|"
+
+            # 遍历 release 目录生成下载表格
+            for archive in release/*; do
+              filename=$(basename "$archive")
+              name="${filename%.*}"      # 去掉最后一个扩展名
+              name="${name%.*}"          # 再去掉一个（处理 .tar.gz）
+
+              # 解析平台和架构
+              case "$filename" in
+                *linux*)   platform="🐧 Linux" ;;
+                *windows*) platform="🪟 Windows" ;;
+                *macos*)   platform="🍎 macOS" ;;
+                *)         platform="Other" ;;
+              esac
+
+              case "$filename" in
+                *x86_64*)  arch="x86_64" ;;
+                *aarch64*) arch="aarch64 (ARM64)" ;;
+                *arm*)     arch="ARM" ;;
+                *x86*)     arch="x86 (32-bit)" ;;
+                *)         arch="Unknown" ;;
+              esac
+
+              echo "| ${platform} | ${arch} | [${filename}](${BASE_URL}/${filename}) |"
+            done
+
+            echo ""
+            echo "---"
+            echo ""
+            echo "> 💡 **安装提示**:"
+            echo "> - **Linux/macOS**: 下载 \`.tar.gz\`，解压后 \`chmod +x zenith-*\` 添加执行权限"
+            echo "> - **Windows**: 下载 \`.zip\`，解压即可使用"
+            echo "> - **Apple Silicon (M1/M2/M3/M4)**: 选择 \`aarch64\` 版本"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*
+          tag_name: ${{ needs.get-version.outputs.version }}
+          name: Release ${{ needs.get-version.outputs.version }}
+          body: ${{ steps.changelog.outputs.CHANGELOG }}
           draft: false
           prerelease: false
+          files: release/*
+          make_latest: true
