@@ -180,6 +180,10 @@ zig build -Doptimize=ReleaseSmall
 - **输入校验**：CLI 参数限制在安全范围 — `--disk-size` 最大 4096 MB，`--threads` 最大 1024，`--time` 范围 1-3600 秒。
 - **临时文件**：磁盘测试在 `--disk-path` 目录创建 `zenith_bench.tmp`，每轮测试后自动清理。
 
+## 下载
+
+所有支持平台的预编译二进制文件可在 [Releases 页面](https://github.com/MakotoArai-CN/zenith/releases) 获取。
+
 ## 构建要求
 
 - [Zig](https://ziglang.org/download/) >= 0.15.0

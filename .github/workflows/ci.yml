@@ -1,0 +1,111 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ published ]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Zig (Linux/macOS)
+      if: runner.os != 'Windows'
+      uses: mlugg/setup-zig@v1
+      with:
+        version: 0.15.0
+    
+    - name: Install Zig (Windows)
+      if: runner.os == 'Windows'
+      uses: mlugg/setup-zig@v1
+      with:
+        version: 0.15.0
+    
+    - name: Run tests
+      run: |
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          zig build test
+        else
+          make test
+        fi
+    
+    - name: Build native release
+      run: |
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          zig build -Doptimize=ReleaseSmall
+        else
+          make release
+        fi
+
+  build-release:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    permissions:
+      contents: write
+    steps:
+    - name: Install dependencies and Zig
+      run: |
+        # Backup original repositories
+        cp /etc/apk/repositories /etc/apk/repositories.bak
+        
+        # Add Aliyun mirror for faster downloads
+        echo "https://mirrors.aliyun.com/alpine/edge/main" >> /etc/apk/repositories
+        echo "https://mirrors.aliyun.com/alpine/edge/community" >> /etc/apk/repositories
+        
+        # Update package index
+        apk update
+        
+        # Install Zig compiler
+        apk add --no-cache zig git make
+        
+        # Verify installation
+        zig version
+    
+    - uses: actions/checkout@v4
+    
+    - name: Build all cross-compilation targets
+      run: make release
+    
+    - name: Verify build artifacts
+      run: |
+        ls -la zig-out/bin/
+        echo "Built files:"
+        find zig-out/bin -type f -name "zenith-*" | wc -l
+    
+    - name: Create release archives
+      run: |
+        # Install zip for packaging
+        apk add --no-cache zip tar
+        
+        mkdir -p release
+        cd zig-out/bin
+        for file in zenith-*; do
+          if [ -f "$file" ]; then
+            echo "Processing: $file"
+            if [[ "$file" == *windows* ]]; then
+              zip "../release/$file.zip" "$file"
+              echo "Created ZIP: $file.zip"
+            else
+              tar -czf "../release/$file.tar.gz" "$file"
+              echo "Created TAR.GZ: $file.tar.gz"
+            fi
+          fi
+        done
+        echo "Release archives created:"
+        ls -la ../release/
+    
+    - name: Upload release assets
+      uses: softprops/action-gh-release@v2
+      with:
+        files: release/*
+        draft: false
+        prerelease: false

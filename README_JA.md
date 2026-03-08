@@ -180,6 +180,10 @@ zig build -Doptimize=ReleaseSmall
 - **入力バリデーション**：CLIパラメータは安全な範囲に制限 — `--disk-size` 最大4096 MB、`--threads` 最大1024、`--time` 範囲1-3600秒。
 - **一時ファイル**：ディスクベンチマークは `--disk-path` ディレクトリに `zenith_bench.tmp` を作成。各テストラウンド後に自動クリーンアップ。
 
+## ダウンロード
+
+すべてのサポートプラットフォーム向けのプリコンパイル済みバイナリは、[Releasesページ](https://github.com/MakotoArai-CN/zenith/releases)から入手可能です。
+
 ## ビルド要件
 
 - [Zig](https://ziglang.org/download/) >= 0.15.0

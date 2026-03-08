@@ -19,8 +19,10 @@ A lightweight, cross-platform system benchmark tool written in Zig. Single binar
 - **Multi-architecture** — x86_64, aarch64, arm, riscv64, s390x, ppc64le, i386, loongarch64
 - **Trilingual output** — English, 中文, 日本語
 - **Auto language detection** — detects system language automatically, override with `-l`
-- **Terminal adaptive** — auto-detect color, Unicode, terminal width; ASCII fallback for legacy terminals (e.g. Windows cmd.exe)
-- **Duration-based benchmarking** — warmup + timed sampling with median aggregation for stable results
+
+## Download
+
+Pre-compiled binaries for all supported platforms are available on the [Releases page](https://github.com/MakotoArai-CN/zenith/releases).
 
 ## Language Support
 
