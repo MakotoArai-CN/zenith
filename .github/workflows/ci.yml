@@ -89,7 +89,10 @@ jobs:
             && COMMITS=$(git log --oneline --pretty=format:"- %s (%h)" | head -50) \
             || COMMITS=$(git log ${PREV}..HEAD --oneline --pretty=format:"- %s (%h)")
 
-          badge() { echo "| [![${1}](https://img.shields.io/badge/${2}?style=for-the-badge&logo=${3}&logoColor=${4})](${BASE}/${5}) | ${6} |"; }
+          # $1=alt $2=badge_label $3=badge_value $4=color $5=logo $6=logoColor $7=file $8=desc
+          badge() {
+            echo "| [![${1}](https://img.shields.io/badge/${2}-${3}-${4}?style=for-the-badge&logo=${5}&logoColor=${6})](${BASE}/${7}) | ${8} |"
+          }
 
           {
             echo "CHANGELOG<<EOF"
@@ -106,16 +109,26 @@ jobs:
             for f in release/*; do
               n=$(basename "$f")
               case "$n" in
-                *linux*x86_64*)   badge "Linux x86_64"        "Linux-x86__64-FCC624"        linux  black "$n" "Linux x86_64" ;;
-                *linux*aarch64*)  badge "Linux aarch64"       "Linux-aarch64-FCC624"        linux  black "$n" "Linux ARM64" ;;
-                *linux*arm*)      badge "Linux ARM"           "Linux-ARM-FCC624"            linux  black "$n" "Linux ARM 32-bit" ;;
-                *linux*x86*)      badge "Linux x86"           "Linux-x86-FCC624"            linux  black "$n" "Linux x86 32-bit" ;;
-                *windows*x86_64*) badge "Windows x86_64"      "Windows-x86__64-0078D6"      windows white "$n" "Windows x86_64" ;;
-                *windows*aarch64*)badge "Windows aarch64"     "Windows-aarch64-0078D6"      windows white "$n" "Windows ARM64" ;;
-                *windows*x86*)    badge "Windows x86"         "Windows-x86-0078D6"          windows white "$n" "Windows x86 32-bit" ;;
-                *macos*x86_64*)   badge "macOS Intel"         "macOS-Intel-000000"          apple  white "$n" "macOS Intel x86_64" ;;
-                *macos*aarch64*)  badge "macOS Apple Silicon" "macOS-Apple%20Silicon-000000" apple  white "$n" "macOS ARM64" ;;
-                *)                badge "Download"            "Download-${n}-grey"          "" white "$n" "$n" ;;
+                *linux*x86_64*)     badge "Linux x86_64"        "Linux"   "x86__64"      "FCC624" linux   black "$n" "Linux x86_64" ;;
+                *linux*aarch64*)    badge "Linux aarch64"       "Linux"   "aarch64"      "FCC624" linux   black "$n" "Linux ARM64" ;;
+                *linux*arm*)        badge "Linux ARM"           "Linux"   "ARM"          "FCC624" linux   black "$n" "Linux ARM 32-bit" ;;
+                *linux*i386*)       badge "Linux i386"          "Linux"   "i386"         "FCC624" linux   black "$n" "Linux x86 32-bit" ;;
+                *linux*loongarch64*)badge "Linux loongarch64"   "Linux"   "loongarch64"  "FCC624" linux   black "$n" "Linux LoongArch64" ;;
+                *linux*ppc64le*)    badge "Linux ppc64le"       "Linux"   "ppc64le"      "FCC624" linux   black "$n" "Linux PowerPC 64 LE" ;;
+                *linux*riscv64*)    badge "Linux riscv64"       "Linux"   "riscv64"      "FCC624" linux   black "$n" "Linux RISC-V 64" ;;
+                *linux*s390x*)      badge "Linux s390x"         "Linux"   "s390x"        "FCC624" linux   black "$n" "Linux s390x" ;;
+                *windows*x86_64*)   badge "Windows x86_64"      "Windows" "x86__64"      "0078D6" windows white "$n" "Windows x86_64" ;;
+                *windows*aarch64*)  badge "Windows aarch64"     "Windows" "aarch64"      "0078D6" windows white "$n" "Windows ARM64" ;;
+                *windows*i386*)     badge "Windows i386"        "Windows" "i386"         "0078D6" windows white "$n" "Windows x86 32-bit" ;;
+                *macos*x86_64*)     badge "macOS Intel"         "macOS"   "Intel"        "000000" apple   white "$n" "macOS Intel x86_64" ;;
+                *macos*aarch64*)    badge "macOS Apple Silicon" "macOS"   "Apple%20Silicon" "000000" apple white "$n" "macOS Apple Silicon" ;;
+                *freebsd*x86_64*)   badge "FreeBSD x86_64"      "FreeBSD" "x86__64"      "AB2B28" freebsd white "$n" "FreeBSD x86_64" ;;
+                *freebsd*aarch64*)  badge "FreeBSD aarch64"     "FreeBSD" "aarch64"      "AB2B28" freebsd white "$n" "FreeBSD ARM64" ;;
+                *)
+                  # 安全 fallback：文件名中 - 转义为 --
+                  safe=$(echo "$n" | sed 's/-/--/g')
+                  badge "Download" "Download" "${safe}" "grey" "data:," white "$n" "$n"
+                  ;;
               esac
             done
             echo ""
