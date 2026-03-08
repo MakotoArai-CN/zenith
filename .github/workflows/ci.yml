@@ -13,142 +13,83 @@ permissions:
   contents: write
 
 jobs:
-  # ==================== 获取版本号 ====================
   get-version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get_version.outputs.version }}
-      tag_exists: ${{ steps.check_tag.outputs.exists }}
+      version: ${{ steps.v.outputs.version }}
+      tag_exists: ${{ steps.t.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get version from build.zig.zon
-        id: get_version
+        with: { fetch-depth: 0 }
+      - id: v
         run: |
-          VERSION=$(grep -oP '\.version\s*=\s*"\K[^"]+' build.zig.zon)
-          if [ -z "$VERSION" ]; then
-            echo "Error: Could not extract version from build.zig.zon"
-            exit 1
-          fi
-          echo "version=v${VERSION}" >> $GITHUB_OUTPUT
-          echo "Detected version: v${VERSION}"
-
-      - name: Check if tag exists
-        id: check_tag
+          V=$(grep -oP '\.version\s*=\s*"\K[^"]+' build.zig.zon)
+          [ -z "$V" ] && echo "Cannot extract version" && exit 1
+          echo "version=v${V}" >> $GITHUB_OUTPUT
+      - id: t
         run: |
-          if git rev-parse "${{ steps.get_version.outputs.version }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Tag ${{ steps.get_version.outputs.version }} already exists"
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Tag ${{ steps.get_version.outputs.version }} does not exist"
-          fi
+          git rev-parse "${{ steps.v.outputs.version }}" >/dev/null 2>&1 \
+            && echo "exists=true" >> $GITHUB_OUTPUT \
+            || echo "exists=false" >> $GITHUB_OUTPUT
 
-  # ==================== 测试 ====================
   test:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            use_make: true
-          - os: windows-latest
-            use_make: false
-          - os: macos-latest
-            use_make: true
+          - { os: ubuntu-latest,  make: true }
+          - { os: windows-latest, make: false }
+          - { os: macos-latest,   make: true }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with: { version: "0.15.1" }
+      - if: matrix.make
+        run: make test && make release
+      - if: "!matrix.make"
+        run: zig build test && zig build -Doptimize=ReleaseSmall
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: "0.15.1"
-
-      - name: Run tests (Make)
-        if: matrix.use_make
-        run: make test
-
-      - name: Run tests (Zig)
-        if: "!matrix.use_make"
-        run: zig build test
-
-      - name: Build native release (Make)
-        if: matrix.use_make
-        run: make release
-
-      - name: Build native release (Zig)
-        if: "!matrix.use_make"
-        run: zig build -Doptimize=ReleaseSmall
-
-  # ==================== 交叉编译 & 发布 ====================
   build-release:
     needs: [get-version, test]
     if: |
       github.event_name == 'release' ||
-      (github.event_name == 'workflow_dispatch') ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && needs.get-version.outputs.tag_exists == 'false')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: { fetch-depth: 0 }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "0.15.1" }
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: "0.15.1"
-
-      - name: Build all cross-compilation targets
-        run: make release
-
-      - name: Verify build artifacts
+      - name: Build & package
         run: |
-          echo "=== Build artifacts ==="
-          ls -lah zig-out/bin/
-          echo ""
-          echo "Total zenith binaries:"
-          find zig-out/bin -type f -name "zenith-*" | sort
-          COUNT=$(find zig-out/bin -type f -name "zenith-*" | wc -l)
-          echo "Count: $COUNT"
-          if [ "$COUNT" -eq 0 ]; then
-            echo "Error: No binaries found!"
-            exit 1
-          fi
-
-      - name: Create release archives
-        run: |
+          make release
           mkdir -p release
           cd zig-out/bin
-          for file in zenith-*; do
-            if [ -f "$file" ]; then
-              echo "Processing: $file"
-              if echo "$file" | grep -q "windows"; then
-                zip "../../release/${file}.zip" "$file"
-              else
-                tar -czf "../../release/${file}.tar.gz" "$file"
-              fi
+          for f in zenith-*; do
+            [ -f "$f" ] || continue
+            if echo "$f" | grep -q windows; then
+              zip "../../release/${f}.zip" "$f"
+            else
+              tar -czf "../../release/${f}.tar.gz" "$f"
             fi
           done
-          echo ""
-          echo "=== Release archives ==="
           ls -lah ../../release/
 
       - name: Generate changelog
-        id: changelog
+        id: cl
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git log --oneline --pretty=format:"- %s (%h)" | head -50)
-          else
-            COMMITS=$(git log ${PREV_TAG}..HEAD --oneline --pretty=format:"- %s (%h)")
-          fi
-
-          VERSION="${{ needs.get-version.outputs.version }}"
+          V="${{ needs.get-version.outputs.version }}"
           REPO="${{ github.repository }}"
-          BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+          BASE="https://github.com/${REPO}/releases/download/${V}"
+          PREV=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          [ -z "$PREV" ] \
+            && COMMITS=$(git log --oneline --pretty=format:"- %s (%h)" | head -50) \
+            || COMMITS=$(git log ${PREV}..HEAD --oneline --pretty=format:"- %s (%h)")
+
+          badge() { echo "| [![${1}](https://img.shields.io/badge/${2}?style=for-the-badge&logo=${3}&logoColor=${4})](${BASE}/${5}) | ${6} |"; }
 
           {
             echo "CHANGELOG<<EOF"
@@ -160,51 +101,34 @@ jobs:
             echo ""
             echo "## 📦 下载"
             echo ""
-            echo "| 平台 | 架构 | 下载 |"
-            echo "|:-----|:-----|:-----|"
-
-            # 遍历 release 目录生成下载表格
-            for archive in release/*; do
-              filename=$(basename "$archive")
-              name="${filename%.*}"      # 去掉最后一个扩展名
-              name="${name%.*}"          # 再去掉一个（处理 .tar.gz）
-
-              # 解析平台和架构
-              case "$filename" in
-                *linux*)   platform="🐧 Linux" ;;
-                *windows*) platform="🪟 Windows" ;;
-                *macos*)   platform="🍎 macOS" ;;
-                *)         platform="Other" ;;
+            echo "| 下载 | 说明 |"
+            echo "|:----:|:-----|"
+            for f in release/*; do
+              n=$(basename "$f")
+              case "$n" in
+                *linux*x86_64*)   badge "Linux x86_64"        "Linux-x86__64-FCC624"        linux  black "$n" "Linux x86_64" ;;
+                *linux*aarch64*)  badge "Linux aarch64"       "Linux-aarch64-FCC624"        linux  black "$n" "Linux ARM64" ;;
+                *linux*arm*)      badge "Linux ARM"           "Linux-ARM-FCC624"            linux  black "$n" "Linux ARM 32-bit" ;;
+                *linux*x86*)      badge "Linux x86"           "Linux-x86-FCC624"            linux  black "$n" "Linux x86 32-bit" ;;
+                *windows*x86_64*) badge "Windows x86_64"      "Windows-x86__64-0078D6"      windows white "$n" "Windows x86_64" ;;
+                *windows*aarch64*)badge "Windows aarch64"     "Windows-aarch64-0078D6"      windows white "$n" "Windows ARM64" ;;
+                *windows*x86*)    badge "Windows x86"         "Windows-x86-0078D6"          windows white "$n" "Windows x86 32-bit" ;;
+                *macos*x86_64*)   badge "macOS Intel"         "macOS-Intel-000000"          apple  white "$n" "macOS Intel x86_64" ;;
+                *macos*aarch64*)  badge "macOS Apple Silicon" "macOS-Apple%20Silicon-000000" apple  white "$n" "macOS ARM64" ;;
+                *)                badge "Download"            "Download-${n}-grey"          "" white "$n" "$n" ;;
               esac
-
-              case "$filename" in
-                *x86_64*)  arch="x86_64" ;;
-                *aarch64*) arch="aarch64 (ARM64)" ;;
-                *arm*)     arch="ARM" ;;
-                *x86*)     arch="x86 (32-bit)" ;;
-                *)         arch="Unknown" ;;
-              esac
-
-              echo "| ${platform} | ${arch} | [${filename}](${BASE_URL}/${filename}) |"
             done
-
             echo ""
             echo "---"
-            echo ""
-            echo "> 💡 **安装提示**:"
-            echo "> - **Linux/macOS**: 下载 \`.tar.gz\`，解压后 \`chmod +x zenith-*\` 添加执行权限"
-            echo "> - **Windows**: 下载 \`.zip\`，解压即可使用"
-            echo "> - **Apple Silicon (M1/M2/M3/M4)**: 选择 \`aarch64\` 版本"
+            echo "> 💡 **Linux/macOS**: 解压后 \`chmod +x zenith-*\` | **Windows**: 解压即用 | **Apple Silicon**: 选 \`aarch64\`"
             echo "EOF"
           } >> $GITHUB_OUTPUT
 
-      - name: Create GitHub Release
+      - name: Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
           name: Release ${{ needs.get-version.outputs.version }}
-          body: ${{ steps.changelog.outputs.CHANGELOG }}
-          draft: false
-          prerelease: false
+          body: ${{ steps.cl.outputs.CHANGELOG }}
           files: release/*
           make_latest: true
