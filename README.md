@@ -8,6 +8,8 @@
 
 A lightweight, cross-platform system benchmark tool written in Zig. Single binary, zero dependencies.
 
+> Benchmark results are for reference only. Due to differences in scheduling across operating systems, caching, and other factors, they may differ from actual performance!
+
 ## Features
 
 - **System Information** — hostname, OS, architecture, kernel, CPU model/cores/cache, memory/swap, disk space, uptime, timezone, virtualization, system load
