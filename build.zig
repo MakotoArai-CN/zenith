@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const version = "1.0.2";
+
 const CrossTarget = struct {
     name: []const u8,
     cpu_arch: std.Target.Cpu.Arch,
@@ -30,11 +32,16 @@ const cross_targets = [_]CrossTarget{
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
+    const build_options_module = build_options.createModule();
+
     // ===== Default install: build ALL cross-compilation targets =====
     for (cross_targets) |ct| {
         const ct_target = b.resolveTargetQuery(.{
             .cpu_arch = ct.cpu_arch,
             .os_tag = ct.os_tag,
+            .abi = if (ct.os_tag == .linux) .musl else null,
         });
 
         const ct_clap = b.dependency("clap", .{
@@ -48,10 +55,17 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         ct_module.addImport("clap", ct_clap.module("clap"));
+        ct_module.addImport("build_options", build_options_module);
+
+        const static_linkage: ?std.builtin.LinkMode = switch (ct.os_tag) {
+            .linux => .static,
+            else => null,
+        };
 
         const ct_exe = b.addExecutable(.{
             .name = b.fmt("zenith-{s}", .{ct.name}),
             .root_module = ct_module,
+            .linkage = static_linkage,
         });
 
         b.installArtifact(ct_exe);
@@ -71,6 +85,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     native_module.addImport("clap", native_clap.module("clap"));
+    native_module.addImport("build_options", build_options_module);
 
     const native_exe = b.addExecutable(.{
         .name = "zenith",
@@ -93,6 +108,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_module.addImport("clap", native_clap.module("clap"));
+    test_module.addImport("build_options", build_options_module);
 
     const exe_unit_tests = b.addTest(.{
         .name = "zenith-test",
