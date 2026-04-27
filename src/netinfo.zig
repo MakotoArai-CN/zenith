@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const output = @import("output.zig");
 const cli = @import("cli.zig");
+const compat = @import("compat.zig");
 
 // ==================== Data Structures ====================
 
@@ -84,23 +85,43 @@ fn detectLocalIp(info: *NetworkInfo) void {
 }
 
 fn detectLocalIpPosix(info: *NetworkInfo) void {
-    // Create UDP socket and connect to 8.8.8.8:53 to determine local IP
-    const sock = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.DGRAM, 0) catch return;
-    defer std.posix.close(sock);
+    // 0.15 used std.posix.{socket,connect,getsockname,close}; 0.16 stripped
+    // those out of std.posix. Use libc directly — they're always linked on
+    // platforms that reach this branch (musl on Linux, libSystem on macOS,
+    // libc on FreeBSD).
+    const c = struct {
+        const AF_INET: c_int = 2;
+        const SOCK_DGRAM: c_int = 2;
+        extern "c" fn socket(domain: c_int, type_: c_int, protocol: c_int) c_int;
+        extern "c" fn connect(sockfd: c_int, addr: *const sockaddr_in, addrlen: u32) c_int;
+        extern "c" fn getsockname(sockfd: c_int, addr: *sockaddr_in, addrlen: *u32) c_int;
+        extern "c" fn close(fd: c_int) c_int;
+        const sockaddr_in = extern struct {
+            family: u16,
+            port: u16,
+            addr: [4]u8,
+            zero: [8]u8,
+        };
+    };
 
-    const addr = std.net.Address.initIp4(.{ 8, 8, 8, 8 }, 53);
-    std.posix.connect(sock, &addr.any, @sizeOf(std.posix.sockaddr.in)) catch return;
+    const sock = c.socket(c.AF_INET, c.SOCK_DGRAM, 0);
+    if (sock < 0) return;
+    defer _ = c.close(sock);
 
-    var local_addr: std.posix.sockaddr = undefined;
-    var addr_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr);
-    std.posix.getsockname(sock, &local_addr, &addr_len) catch return;
+    var dest = c.sockaddr_in{
+        .family = c.AF_INET,
+        .port = std.mem.nativeToBig(u16, 53),
+        .addr = .{ 8, 8, 8, 8 },
+        .zero = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
+    };
+    if (c.connect(sock, &dest, @sizeOf(c.sockaddr_in)) != 0) return;
 
-    // Extract IPv4 address
-    const sa4: *const std.posix.sockaddr.in = @ptrCast(@alignCast(&local_addr));
-    const ip_bytes = @as(*const [4]u8, @ptrCast(&sa4.addr));
+    var local: c.sockaddr_in = undefined;
+    var local_len: u32 = @sizeOf(c.sockaddr_in);
+    if (c.getsockname(sock, &local, &local_len) != 0) return;
 
     const ip_str = std.fmt.bufPrint(&info.local_ip, "{d}.{d}.{d}.{d}", .{
-        ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3],
+        local.addr[0], local.addr[1], local.addr[2], local.addr[3],
     }) catch return;
     info.local_ip_len = ip_str.len;
 }
@@ -163,7 +184,10 @@ fn detectLocalIpWindows(info: *NetworkInfo) void {
 // ==================== Public IP via HTTP ====================
 
 fn fetchPublicInfo(allocator: std.mem.Allocator, info: *NetworkInfo) void {
-    var client: std.http.Client = .{ .allocator = allocator };
+    var client: std.http.Client = if (comptime compat.is_zig_016)
+        .{ .allocator = allocator, .io = compat.io() }
+    else
+        .{ .allocator = allocator };
     defer client.deinit();
 
     var body: [4096]u8 = undefined;

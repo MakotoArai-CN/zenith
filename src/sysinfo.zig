@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const output = @import("output.zig");
 const cli = @import("cli.zig");
+const compat = @import("compat.zig");
 
 // ==================== Data Structures ====================
 
@@ -154,13 +155,13 @@ fn readCpuModel(cpu: *CpuInfo) void {
 }
 
 fn readLinuxCpuModel(cpu: *CpuInfo) void {
-    const file = std.fs.openFileAbsolute("/proc/cpuinfo", .{}) catch {
+    const file = compat.openFileAbs("/proc/cpuinfo") catch {
         readCpuModelCpuid(cpu);
         return;
     };
-    defer file.close();
+    defer compat.fileClose(file);
     var buf: [8192]u8 = undefined;
-    const n = file.read(&buf) catch {
+    const n = compat.fileRead(file, &buf) catch {
         readCpuModelCpuid(cpu);
         return;
     };
@@ -217,13 +218,13 @@ fn readCpuTopology(cpu: *CpuInfo) void {
 
 fn readLinuxCpuTopology(cpu: *CpuInfo) void {
     // Count unique (physical_id, core_id) pairs from /proc/cpuinfo
-    const file = std.fs.openFileAbsolute("/proc/cpuinfo", .{}) catch {
+    const file = compat.openFileAbs("/proc/cpuinfo") catch {
         readCpuTopologyCpuid(cpu);
         return;
     };
-    defer file.close();
+    defer compat.fileClose(file);
     var buf: [32768]u8 = undefined;
-    const n = file.read(&buf) catch {
+    const n = compat.fileRead(file, &buf) catch {
         readCpuTopologyCpuid(cpu);
         return;
     };
@@ -288,7 +289,7 @@ fn readWindowsCpuTopology(cpu: *CpuInfo) void {
 
     var buf: [@sizeOf(SLPI) * 128]u8 align(@alignOf(SLPI)) = undefined;
     var buf_len: windows.DWORD = @intCast(buf.len);
-    if (k32.GetLogicalProcessorInformation(@ptrCast(&buf), &buf_len) == 0) {
+    if (!compat.winBool(k32.GetLogicalProcessorInformation(@ptrCast(&buf), &buf_len))) {
         readCpuTopologyCpuid(cpu);
         return;
     }
@@ -371,19 +372,19 @@ fn readLinuxCpuCache(cpu: *CpuInfo) void {
 }
 
 fn readFileInt(path: []const u8) ?u32 {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close();
+    const file = compat.openFileAbs(path) catch return null;
+    defer compat.fileClose(file);
     var buf: [32]u8 = undefined;
-    const n = file.read(&buf) catch return null;
+    const n = compat.fileRead(file, &buf) catch return null;
     const s = std.mem.trim(u8, buf[0..n], " \t\n\r");
     return std.fmt.parseInt(u32, s, 10) catch null;
 }
 
 fn readCacheSizeKb(path: []const u8) ?u32 {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close();
+    const file = compat.openFileAbs(path) catch return null;
+    defer compat.fileClose(file);
     var buf: [32]u8 = undefined;
-    const n = file.read(&buf) catch return null;
+    const n = compat.fileRead(file, &buf) catch return null;
     const s = std.mem.trim(u8, buf[0..n], " \t\n\r");
     // Format: "32K" or "256K" or "12288K"
     if (s.len > 0 and (s[s.len - 1] == 'K' or s[s.len - 1] == 'k')) {
@@ -424,7 +425,7 @@ fn readWindowsCpuCache(cpu: *CpuInfo) void {
 
     var buf: [@sizeOf(SLPI) * 128]u8 align(@alignOf(SLPI)) = undefined;
     var buf_len: windows.DWORD = @intCast(buf.len);
-    if (k32.GetLogicalProcessorInformation(@ptrCast(&buf), &buf_len) == 0) return;
+    if (!compat.winBool(k32.GetLogicalProcessorInformation(@ptrCast(&buf), &buf_len))) return;
 
     const entry_size = @sizeOf(SLPI);
     const count = buf_len / @as(u32, @intCast(entry_size));
@@ -514,10 +515,10 @@ fn readMemory(mem: *MemInfo) void {
 }
 
 fn readLinuxMemory(mem: *MemInfo) void {
-    const file = std.fs.openFileAbsolute("/proc/meminfo", .{}) catch return;
-    defer file.close();
+    const file = compat.openFileAbs("/proc/meminfo") catch return;
+    defer compat.fileClose(file);
     var buf: [4096]u8 = undefined;
-    const n = file.read(&buf) catch return;
+    const n = compat.fileRead(file, &buf) catch return;
     var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, "MemTotal:")) {
@@ -557,7 +558,7 @@ fn readWindowsMemory(mem: *MemInfo) void {
     };
     var ms: MEMORYSTATUSEX = std.mem.zeroes(MEMORYSTATUSEX);
     ms.dwLength = @sizeOf(MEMORYSTATUSEX);
-    if (k32.GlobalMemoryStatusEx(&ms) != 0) {
+    if (compat.winBool(k32.GlobalMemoryStatusEx(&ms))) {
         mem.total_bytes = ms.ullTotalPhys;
         mem.available_bytes = ms.ullAvailPhys;
         mem.swap_total_bytes = ms.ullTotalPageFile;
@@ -637,12 +638,12 @@ fn readHostname(os: *OsInfo) void {
 }
 
 fn readLinuxHostname(os: *OsInfo) void {
-    const file = std.fs.openFileAbsolute("/etc/hostname", .{}) catch {
+    const file = compat.openFileAbs("/etc/hostname") catch {
         setStr(&os.hostname, &os.hostname_len, "unknown");
         return;
     };
-    defer file.close();
-    const n = file.read(&os.hostname) catch {
+    defer compat.fileClose(file);
+    const n = compat.fileRead(file, &os.hostname) catch {
         setStr(&os.hostname, &os.hostname_len, "unknown");
         return;
     };
@@ -655,7 +656,7 @@ fn readWindowsHostname(os: *OsInfo) void {
         extern "kernel32" fn GetComputerNameA(lpBuffer: [*]u8, nSize: *windows.DWORD) callconv(.winapi) windows.BOOL;
     };
     var name_len: windows.DWORD = @intCast(os.hostname.len);
-    if (k32.GetComputerNameA(&os.hostname, &name_len) != 0) {
+    if (compat.winBool(k32.GetComputerNameA(&os.hostname, &name_len))) {
         os.hostname_len = @intCast(name_len);
     } else {
         setStr(&os.hostname, &os.hostname_len, "unknown");
@@ -663,12 +664,12 @@ fn readWindowsHostname(os: *OsInfo) void {
 }
 
 fn readPosixHostname(os: *OsInfo) void {
-    const rc = std.posix.system.gethostname(@ptrCast(&os.hostname), os.hostname.len);
-    if (rc == 0) {
-        os.hostname_len = std.mem.indexOfScalar(u8, &os.hostname, 0) orelse os.hostname.len;
-    } else {
+    var hostname_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+    const result = std.posix.gethostname(&hostname_buf) catch {
         setStr(&os.hostname, &os.hostname_len, "unknown");
-    }
+        return;
+    };
+    setStr(&os.hostname, &os.hostname_len, result);
 }
 
 // ==================== Kernel Version ====================
@@ -685,13 +686,13 @@ fn readKernelVersion(os: *OsInfo) void {
 
 fn readLinuxKernelVersion(os: *OsInfo) void {
     // /proc/version format: "Linux version 5.14.0-570.22.1.el9_6.x86_64 (...)"
-    const file = std.fs.openFileAbsolute("/proc/version", .{}) catch {
+    const file = compat.openFileAbs("/proc/version") catch {
         setStr(&os.kernel_version, &os.kernel_version_len, "unknown");
         return;
     };
-    defer file.close();
+    defer compat.fileClose(file);
     var buf: [512]u8 = undefined;
-    const n = file.read(&buf) catch {
+    const n = compat.fileRead(file, &buf) catch {
         setStr(&os.kernel_version, &os.kernel_version_len, "unknown");
         return;
     };
@@ -761,13 +762,13 @@ fn readFullOsName(os: *OsInfo) void {
 }
 
 fn readLinuxOsName(os: *OsInfo) void {
-    const file = std.fs.openFileAbsolute("/etc/os-release", .{}) catch {
+    const file = compat.openFileAbs("/etc/os-release") catch {
         setStr(&os.full_name, &os.full_name_len, "Linux");
         return;
     };
-    defer file.close();
+    defer compat.fileClose(file);
     var buf: [4096]u8 = undefined;
-    const n = file.read(&buf) catch {
+    const n = compat.fileRead(file, &buf) catch {
         setStr(&os.full_name, &os.full_name_len, "Linux");
         return;
     };
@@ -863,10 +864,10 @@ fn readUptime(os: *OsInfo) void {
 }
 
 fn readLinuxUptime(os: *OsInfo) void {
-    const file = std.fs.openFileAbsolute("/proc/uptime", .{}) catch return;
-    defer file.close();
+    const file = compat.openFileAbs("/proc/uptime") catch return;
+    defer compat.fileClose(file);
     var buf: [64]u8 = undefined;
-    const n = file.read(&buf) catch return;
+    const n = compat.fileRead(file, &buf) catch return;
     const content = buf[0..n];
     const space = std.mem.indexOf(u8, content, " ") orelse content.len;
     const up_str = content[0..space];
@@ -918,10 +919,10 @@ fn readTimezone(os: *OsInfo) void {
 fn readLinuxTimezone(os: *OsInfo) void {
     // Method 1: /etc/timezone (Debian/Ubuntu)
     blk: {
-        const file = std.fs.openFileAbsolute("/etc/timezone", .{}) catch break :blk;
-        defer file.close();
+        const file = compat.openFileAbs("/etc/timezone") catch break :blk;
+        defer compat.fileClose(file);
         var buf: [64]u8 = undefined;
-        const n = file.read(&buf) catch break :blk;
+        const n = compat.fileRead(file, &buf) catch break :blk;
         const tz = std.mem.trim(u8, buf[0..n], " \t\n\r");
         if (tz.len > 0) {
             setStr(&os.timezone, &os.timezone_len, tz);
@@ -955,10 +956,10 @@ fn readLinuxTimezone(os: *OsInfo) void {
 
     // Method 3: /etc/TZ (Alpine Linux)
     blk3: {
-        const file = std.fs.openFileAbsolute("/etc/TZ", .{}) catch break :blk3;
-        defer file.close();
+        const file = compat.openFileAbs("/etc/TZ") catch break :blk3;
+        defer compat.fileClose(file);
         var tz_buf: [64]u8 = undefined;
-        const tz_n = file.read(&tz_buf) catch break :blk3;
+        const tz_n = compat.fileRead(file, &tz_buf) catch break :blk3;
         const tz = std.mem.trim(u8, tz_buf[0..tz_n], " \t\n\r");
         if (tz.len > 0) {
             setStr(&os.timezone, &os.timezone_len, tz);
@@ -967,7 +968,7 @@ fn readLinuxTimezone(os: *OsInfo) void {
     }
 
     // Method 4: TZ environment variable
-    if (std.posix.getenv("TZ")) |tz| {
+    if (compat.getenv("TZ")) |tz| {
         if (tz.len > 0) {
             setStr(&os.timezone, &os.timezone_len, tz);
             return;
@@ -1011,9 +1012,9 @@ fn readWindowsTimezone(os: *OsInfo) void {
 fn readBsdTimezone(os: *OsInfo) void {
     // readlink /etc/localtime -> /var/db/timezone/zoneinfo/... or /usr/share/zoneinfo/...
     var link_buf: [256]u8 = undefined;
-    const link = std.fs.cwd().readLink("/etc/localtime", &link_buf) catch {
+    const link = compat.cwdReadLink("/etc/localtime", &link_buf) catch {
         // Fallback: TZ environment variable
-        if (std.posix.getenv("TZ")) |tz| {
+        if (compat.getenv("TZ")) |tz| {
             if (tz.len > 0) {
                 setStr(&os.timezone, &os.timezone_len, tz);
                 return;
@@ -1039,7 +1040,7 @@ fn readBsdTimezone(os: *OsInfo) void {
     }
 
     // Fallback: TZ environment variable
-    if (std.posix.getenv("TZ")) |tz| {
+    if (compat.getenv("TZ")) |tz| {
         if (tz.len > 0) {
             setStr(&os.timezone, &os.timezone_len, tz);
             return;
@@ -1059,10 +1060,10 @@ fn readDiskSpace(disk: *DiskInfo) void {
 }
 
 fn readLinuxDiskSpace(disk: *DiskInfo) void {
-    const file = std.fs.openFileAbsolute("/proc/mounts", .{}) catch return;
-    defer file.close();
+    const file = compat.openFileAbs("/proc/mounts") catch return;
+    defer compat.fileClose(file);
     var buf: [8192]u8 = undefined;
-    const n = file.read(&buf) catch return;
+    const n = compat.fileRead(file, &buf) catch return;
     var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
     while (lines.next()) |line| {
         if (disk.drive_count >= disk.drives.len) break;
@@ -1148,7 +1149,7 @@ fn readWindowsDiskSpace(disk: *DiskInfo) void {
 
         var total_bytes: u64 = 0;
         var free_bytes: u64 = 0;
-        if (k32.GetDiskFreeSpaceExA(path, null, &total_bytes, &free_bytes) != 0) {
+        if (compat.winBool(k32.GetDiskFreeSpaceExA(path, null, &total_bytes, &free_bytes))) {
             const idx = disk.drive_count;
             const entry = &disk.drives[idx];
             // Show drive letter (e.g., "C:")
@@ -1196,10 +1197,10 @@ fn readVirtualization(virt: *VirtInfo) void {
 
     // Linux: check DMI
     if (builtin.os.tag == .linux and virt.hypervisor_len == 0) {
-        const file = std.fs.openFileAbsolute("/sys/class/dmi/id/sys_vendor", .{}) catch return;
-        defer file.close();
+        const file = compat.openFileAbs("/sys/class/dmi/id/sys_vendor") catch return;
+        defer compat.fileClose(file);
         var buf: [128]u8 = undefined;
-        const n = file.read(&buf) catch return;
+        const n = compat.fileRead(file, &buf) catch return;
         const vendor = std.mem.trim(u8, buf[0..n], " \t\n\r");
         if (std.mem.indexOf(u8, vendor, "QEMU") != null) {
             setStr(&virt.hypervisor, &virt.hypervisor_len, "QEMU/KVM");
@@ -1222,10 +1223,10 @@ fn readLoad(load: *LoadInfo) void {
 }
 
 fn readLinuxLoad(load: *LoadInfo) void {
-    const file = std.fs.openFileAbsolute("/proc/loadavg", .{}) catch return;
-    defer file.close();
+    const file = compat.openFileAbs("/proc/loadavg") catch return;
+    defer compat.fileClose(file);
     var buf: [64]u8 = undefined;
-    const n = file.read(&buf) catch return;
+    const n = compat.fileRead(file, &buf) catch return;
     var fields = std.mem.splitScalar(u8, buf[0..n], ' ');
     if (fields.next()) |f1| load.load_1 = std.fmt.parseFloat(f64, f1) catch 0;
     if (fields.next()) |f2| load.load_5 = std.fmt.parseFloat(f64, f2) catch 0;

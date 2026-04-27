@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat.zig");
 
 pub const TermCaps = struct {
     color: bool = false,
@@ -41,21 +42,21 @@ fn detectWindows(caps: *TermCaps) void {
 
     // Check if stdout is a console (not piped)
     var mode: windows.DWORD = 0;
-    if (k32.GetConsoleMode(handle, &mode) == 0) return;
+    if (!compat.winBool(k32.GetConsoleMode(handle, &mode))) return;
 
     // Enable VT processing for ANSI escape codes
-    if (k32.SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0) {
+    if (compat.winBool(k32.SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING))) {
         caps.color = true;
     }
 
     // Set UTF-8 output codepage
-    if (k32.SetConsoleOutputCP(65001) != 0) {
+    if (compat.winBool(k32.SetConsoleOutputCP(65001))) {
         caps.unicode = true;
     }
 
     // Get terminal width
     var csbi: k32.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-    if (k32.GetConsoleScreenBufferInfo(handle, &csbi) != 0) {
+    if (compat.winBool(k32.GetConsoleScreenBufferInfo(handle, &csbi))) {
         const w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
         if (w > 0) caps.width = @intCast(w);
     }
@@ -63,7 +64,7 @@ fn detectWindows(caps: *TermCaps) void {
 
 fn detectPosix(caps: *TermCaps) void {
     const fd = std.posix.STDOUT_FILENO;
-    if (!std.posix.isatty(fd)) return;
+    if (!compat.stdoutIsTty()) return;
 
     caps.color = true;
     caps.unicode = true;

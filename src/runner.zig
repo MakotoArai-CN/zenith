@@ -1,6 +1,7 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const output = @import("output.zig");
+const compat = @import("compat.zig");
 const sysinfo = @import("sysinfo.zig");
 const netinfo = @import("netinfo.zig");
 const bench_cpu = @import("bench/cpu.zig");
@@ -123,7 +124,7 @@ fn printSummary(w: *std.Io.Writer, total_score: f64, score_count: u32, lang: cli
 }
 
 fn saveResults(path: []const u8) !void {
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
-    _ = try file.write("Zenith Benchmark Results\n");
+    const file = try compat.createFileCwd(path, true);
+    defer compat.fileClose(file);
+    _ = try compat.fileWrite(file, "Zenith Benchmark Results\n");
 }

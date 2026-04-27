@@ -1,18 +1,19 @@
 const std = @import("std");
 
-const version = "1.0.2";
+const version = "1.0.4";
 
 const CrossTarget = struct {
     name: []const u8,
     cpu_arch: std.Target.Cpu.Arch,
     os_tag: std.Target.Os.Tag,
+    abi_override: ?std.Target.Abi = null,
 };
 
 const cross_targets = [_]CrossTarget{
     // Linux
     .{ .name = "linux-x86_64", .cpu_arch = .x86_64, .os_tag = .linux },
     .{ .name = "linux-aarch64", .cpu_arch = .aarch64, .os_tag = .linux },
-    .{ .name = "linux-arm", .cpu_arch = .arm, .os_tag = .linux },
+    .{ .name = "linux-arm", .cpu_arch = .arm, .os_tag = .linux, .abi_override = .musleabihf },
     .{ .name = "linux-riscv64", .cpu_arch = .riscv64, .os_tag = .linux },
     .{ .name = "linux-s390x", .cpu_arch = .s390x, .os_tag = .linux },
     .{ .name = "linux-ppc64le", .cpu_arch = .powerpc64le, .os_tag = .linux },
@@ -41,20 +42,15 @@ pub fn build(b: *std.Build) void {
         const ct_target = b.resolveTargetQuery(.{
             .cpu_arch = ct.cpu_arch,
             .os_tag = ct.os_tag,
-            .abi = if (ct.os_tag == .linux) .musl else null,
-        });
-
-        const ct_clap = b.dependency("clap", .{
-            .target = ct_target,
-            .optimize = optimize,
+            .abi = ct.abi_override orelse if (ct.os_tag == .linux) .musl else null,
         });
 
         const ct_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = ct_target,
             .optimize = optimize,
+            .link_libc = ct.os_tag != .windows,
         });
-        ct_module.addImport("clap", ct_clap.module("clap"));
         ct_module.addImport("build_options", build_options_module);
 
         const static_linkage: ?std.builtin.LinkMode = switch (ct.os_tag) {
@@ -74,17 +70,12 @@ pub fn build(b: *std.Build) void {
     // ===== Native build for run/test =====
     const native_target = b.standardTargetOptions(.{});
 
-    const native_clap = b.dependency("clap", .{
-        .target = native_target,
-        .optimize = optimize,
-    });
-
     const native_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = native_target,
         .optimize = optimize,
+        .link_libc = native_target.result.os.tag != .windows,
     });
-    native_module.addImport("clap", native_clap.module("clap"));
     native_module.addImport("build_options", build_options_module);
 
     const native_exe = b.addExecutable(.{
@@ -106,8 +97,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = native_target,
         .optimize = optimize,
+        .link_libc = native_target.result.os.tag != .windows,
     });
-    test_module.addImport("clap", native_clap.module("clap"));
     test_module.addImport("build_options", build_options_module);
 
     const exe_unit_tests = b.addTest(.{
